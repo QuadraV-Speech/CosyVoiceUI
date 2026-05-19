@@ -132,7 +132,7 @@ CosyVoiceUI 是基于：
 ---
 
 ## 一键安装脚本
-
+指定GPU请修改脚本变量 `GPU_ID`
 ```bash
 # 安装 cosyvoice docker 环境
 bash launch_cosvyvoice_triton_server install
