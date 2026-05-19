@@ -334,55 +334,9 @@ with open("output.mp3", "wb") as f:
 print("done")
 ```
 
----
 
-# ⚙️ 推荐服务器配置
 
-| 配置     | 推荐             |
-| ------ | -------------- |
-| GPU    | RTX3090 / A100 |
-| CUDA   | 12.x           |
-| Python | 3.10           |
-| Docker | >= 24          |
-| 显存     | >= 24GB        |
 
----
-
-# 📁 项目目录
-
-```text
-CosyVoiceUI/
-├── backend/
-├── static/
-├── templates/
-├── config.py
-├── server.py
-├── requirements.txt
-└── launch_cosvyvoice_triton_server
-```
-
----
-
-# 🔥 TODO
-
-* [ ] WebSocket 流式 TTS
-* [ ] 多 GPU 调度
-* [ ] 音色市场
-* [ ] 音色导入导出
-* [ ] OpenAI 风格 API
-* [ ] 批量合成
-* [ ] 音频缓存加速
-
----
-
-# ❤️ 致谢
-
-感谢：
-
-* [FunAudioLLM / CosyVoice](https://github.com/FunAudioLLM/CosyVoice?utm_source=chatgpt.com)
-* NVIDIA Triton
-* TensorRT-LLM
-* FastAPI
 
 ---
 
