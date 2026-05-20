@@ -67,17 +67,6 @@ CosyVoiceUI 是基于：
 * WAV 自动转换
 * 16k PCM 标准化
 
----
-
-## ⚡ 高性能推理
-
-基于 Triton Inference Server：
-
-* GPU 推理
-* 动态 Batch
-* 高并发
-* HTTP/gRPC 服务
-* TensorRT-LLM 加速
 
 ---
 
