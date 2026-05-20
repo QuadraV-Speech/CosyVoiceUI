@@ -303,7 +303,6 @@ curl -X POST "http://localhost:10100/tts2/" \
      --output tts_output_custom.mp3
 ```
 
----
 
 ---
 
