@@ -124,19 +124,19 @@ CosyVoiceUI 是基于：
 指定GPU请修改脚本变量 `GPU_ID`
 ```bash
 # 安装 cosyvoice docker 环境
-bash launch_cosvyvoice_triton_server install
+bash launch_cosyvoice_triton_server install
 
 # 启动 triton 服务
-bash launch_cosvyvoice_triton_server start
+bash launch_cosyvoice_triton_server start
 
 # 停止 triton 服务
-bash launch_cosvyvoice_triton_server stop
+bash launch_cosyvoice_triton_server stop
 
 # 查看日志
-bash launch_cosvyvoice_triton_server logs
+bash launch_cosyvoice_triton_server logs
 
 # 查看状态
-bash launch_cosvyvoice_triton_server status
+bash launch_cosyvoice_triton_server status
 ```
 
 ---
@@ -165,6 +165,12 @@ pip install -r requirements.txt
 
 ```bash
 python3 -m CosyVoiceUI.server
+
+# 后台启动
+# bash launch_cosyvoiceui.sh
+
+# 杀掉后台
+# bash launch_cosyvoiceui.sh -k
 ```
 
 默认端口：
