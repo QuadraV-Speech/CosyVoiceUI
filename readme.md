@@ -305,33 +305,6 @@ curl -X POST "http://localhost:10100/tts2/" \
 
 ---
 
-# 🐍 Python 调用示例
-
-```python
-import requests
-
-url = "http://localhost:10100/tts2/"
-
-files = {
-    "text": (None, "你好，这是一个测试"),
-    "userId": (None, "common"),
-    "speakerId": (None, "speaker_2"),
-    "speed": (None, "balanced"),
-    "volume": (None, "middle"),
-}
-
-response = requests.post(url, files=files)
-
-with open("output.mp3", "wb") as f:
-    f.write(response.content)
-
-print("done")
-```
-
-
-
-
-
 ---
 
 # 📬 联系作者
