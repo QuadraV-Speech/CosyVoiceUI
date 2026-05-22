@@ -1,5 +1,6 @@
 #!/bin/bash
 
+mkdir -p tmp
 script_name="server"
 PID_FILE="tmp/${script_name}.pid"
 LOG_FILE="tmp/${script_name}.log"
