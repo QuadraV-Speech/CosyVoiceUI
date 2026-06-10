@@ -5,6 +5,10 @@ import json
 import time
 import base64
 import imghdr
+import tempfile
+import threading
+from collections import defaultdict
+from contextlib import contextmanager
 from typing import Optional
 
 import soundfile as sf
@@ -18,16 +22,58 @@ from ..config import CACHE_DIR, WEB_DIR, MAX_AUDIO_SECONDS, REQUIRED_SR, REQUIRE
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(WEB_DIR, exist_ok=True)
 
+_path_locks = defaultdict(threading.RLock)
+_path_locks_guard = threading.Lock()
+
 
 TTS_STYLE = {
     1: ["common", "speaker_1"],
     2: ["common", "speaker_2"],
     3: ["common", "speaker_3"],
+    4: ["common", "speaker_4"],
 }
 
 
 
 NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
+
+
+def get_path_lock(path: str) -> threading.RLock:
+    key = os.path.abspath(path)
+    with _path_locks_guard:
+        return _path_locks[key]
+
+
+@contextmanager
+def locked_path(path: str):
+    lock = get_path_lock(path)
+    with lock:
+        yield
+
+
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def atomic_write_json(path: str, data: dict) -> None:
+    atomic_write_bytes(
+        path,
+        json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
 
 
 def make_response(status: str = "success", msg: str = "", result: Optional[dict] = None):

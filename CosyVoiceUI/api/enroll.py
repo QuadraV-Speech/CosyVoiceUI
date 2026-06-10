@@ -1,5 +1,6 @@
+import asyncio
+import logging
 import os
-import json
 import shutil
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,10 +18,14 @@ from .common import (
     decode_base64_file,
     check_avatar_bytes,
     audio_base64_to_checked_wav,
+    atomic_write_bytes,
+    atomic_write_json,
+    locked_path,
 )
 
 
 router = APIRouter(tags=["enroll"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/cache/audio/{userId}/{speakerId}")
@@ -66,11 +71,13 @@ async def add_user(userId: str):
     userId = safe_name(userId, "userId")
     user_dir = get_user_dir(userId)
 
-    if os.path.exists(user_dir):
-        return make_response(msg="user already exists", result={"userId": userId})
+    with locked_path(user_dir):
+        if os.path.exists(user_dir):
+            return make_response(msg="user already exists", result={"userId": userId})
 
-    os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(user_dir, exist_ok=True)
 
+    logger.info("user added userId=%s", userId)
     return make_response(msg="add user successfully", result={"userId": userId})
 
 
@@ -79,11 +86,13 @@ async def delete_user(userId: str):
     userId = safe_name(userId, "userId")
     user_dir = get_user_dir(userId)
 
-    if not os.path.exists(user_dir):
-        return make_response(msg="user not exists", result={"userId": userId})
+    with locked_path(user_dir):
+        if not os.path.exists(user_dir):
+            return make_response(msg="user not exists", result={"userId": userId})
 
-    shutil.rmtree(user_dir)
+        shutil.rmtree(user_dir)
 
+    logger.info("user deleted userId=%s", userId)
     return make_response(msg="delete user successfully", result={"userId": userId})
 
 
@@ -151,7 +160,10 @@ def fetch_speaker(userId: str, speakerId: str):
 @router.post("/write_speaker")
 async def write_speaker(request: Request):
     data: dict = await request.json()
+    return await asyncio.to_thread(write_speaker_payload, data)
 
+
+def write_speaker_payload(data: dict):
     userId = safe_name(data.get("userId", ""), "userId")
     speakerId = safe_name(data.get("speakerId", ""), "speakerId")
 
@@ -162,74 +174,80 @@ async def write_speaker(request: Request):
     user_dir = get_user_dir(userId)
     speaker_dir = get_speaker_dir(userId, speakerId)
 
-    is_new_speaker = not os.path.exists(speaker_dir)
+    with locked_path(user_dir), locked_path(speaker_dir):
+        is_new_speaker = not os.path.exists(speaker_dir)
 
-    if is_new_speaker:
-        if not audio_base64:
-            raise HTTPException(status_code=400, detail="新增 speaker 时 audio_base64 必填")
-        if not profile:
-            raise HTTPException(status_code=400, detail="新增 speaker 时 profile 必填")
+        if is_new_speaker:
+            if not audio_base64:
+                raise HTTPException(status_code=400, detail="新增 speaker 时 audio_base64 必填")
+            if not profile:
+                raise HTTPException(status_code=400, detail="新增 speaker 时 profile 必填")
 
-    if not any([audio_base64, avatar_base64, profile]):
-        raise HTTPException(status_code=400, detail="audio_base64/avatar_base64/profile 至少传一个")
+        if not any([audio_base64, avatar_base64, profile]):
+            raise HTTPException(status_code=400, detail="audio_base64/avatar_base64/profile 至少传一个")
 
-    os.makedirs(user_dir, exist_ok=True)
-    os.makedirs(speaker_dir, exist_ok=True)
+        os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(speaker_dir, exist_ok=True)
 
-    audio_path = os.path.join(speaker_dir, "audio.wav")
-    avatar_path = os.path.join(speaker_dir, "avatar.png")
-    profile_path = os.path.join(speaker_dir, "profile.json")
+        audio_path = os.path.join(speaker_dir, "audio.wav")
+        avatar_path = os.path.join(speaker_dir, "avatar.png")
+        profile_path = os.path.join(speaker_dir, "profile.json")
 
-    saved = {"audio": False, "avatar": False, "profile": False}
-    audio_info = None
-    avatar_kind = None
+        saved = {"audio": False, "avatar": False, "profile": False}
+        audio_info = None
+        avatar_kind = None
 
-    if audio_base64:
-        audio_bytes, audio_info = audio_base64_to_checked_wav(audio_base64)
+        if audio_base64:
+            audio_bytes, audio_info = audio_base64_to_checked_wav(audio_base64)
 
-        with open(audio_path, "wb") as f:
-            f.write(audio_bytes)
+            atomic_write_bytes(audio_path, audio_bytes)
 
-        saved["audio"] = True
+            saved["audio"] = True
 
-    if avatar_base64:
-        avatar_bytes = decode_base64_file(avatar_base64, "avatar_base64")
-        avatar_kind = check_avatar_bytes(avatar_bytes)
+        if avatar_base64:
+            avatar_bytes = decode_base64_file(avatar_base64, "avatar_base64")
+            avatar_kind = check_avatar_bytes(avatar_bytes)
 
-        with open(avatar_path, "wb") as f:
-            f.write(avatar_bytes)
+            atomic_write_bytes(avatar_path, avatar_bytes)
 
-        saved["avatar"] = True
+            saved["avatar"] = True
 
-    if profile is not None:
-        checked_profile = validate_profile(profile, userId, speakerId)
+        if profile is not None:
+            checked_profile = validate_profile(profile, userId, speakerId)
 
-        with open(profile_path, "w", encoding="utf-8") as f:
-            json.dump(checked_profile, f, ensure_ascii=False, indent=2)
+            atomic_write_json(profile_path, checked_profile)
 
-        saved["profile"] = True
+            saved["profile"] = True
 
-    if not os.path.exists(audio_path):
-        raise HTTPException(status_code=400, detail="speaker 缺少 audio.wav")
+        if not os.path.exists(audio_path):
+            raise HTTPException(status_code=400, detail="speaker 缺少 audio.wav")
 
-    if not os.path.exists(profile_path):
-        raise HTTPException(status_code=400, detail="speaker 缺少 profile.json")
+        if not os.path.exists(profile_path):
+            raise HTTPException(status_code=400, detail="speaker 缺少 profile.json")
 
-    msg = "add speaker successfully" if is_new_speaker else "update speaker successfully"
+        msg = "add speaker successfully" if is_new_speaker else "update speaker successfully"
 
-    return make_response(
-        msg=msg,
-        result={
-            "userId": userId,
-            "speakerId": speakerId,
-            "is_new_speaker": is_new_speaker,
-            "saved": saved,
-            "audio_info": audio_info,
-            "avatar_kind": avatar_kind,
-            "audio_url": f"/cache/audio/{userId}/{speakerId}",
-            "avatar_url": f"/cache/avatar/{userId}/{speakerId}" if os.path.exists(avatar_path) else "",
-        },
-    )
+        logger.info(
+            "speaker written userId=%s speakerId=%s is_new=%s saved=%s",
+            userId,
+            speakerId,
+            is_new_speaker,
+            saved,
+        )
+
+        return make_response(
+            msg=msg,
+            result={
+                "userId": userId,
+                "speakerId": speakerId,
+                "is_new_speaker": is_new_speaker,
+                "saved": saved,
+                "audio_info": audio_info,
+                "avatar_kind": avatar_kind,
+                "audio_url": f"/cache/audio/{userId}/{speakerId}",
+                "avatar_url": f"/cache/avatar/{userId}/{speakerId}" if os.path.exists(avatar_path) else "",
+            },
+        )
 
 
 @router.post("/delete_speaker/{userId}/{speakerId}")
@@ -238,15 +256,18 @@ async def delete_speaker(userId: str, speakerId: str):
     speakerId = safe_name(speakerId, "speakerId")
 
     speaker_dir = get_speaker_dir(userId, speakerId)
+    user_dir = get_user_dir(userId)
 
-    if not os.path.exists(speaker_dir):
-        return make_response(
-            msg="speaker not exists",
-            result={"userId": userId, "speakerId": speakerId},
-        )
+    with locked_path(user_dir), locked_path(speaker_dir):
+        if not os.path.exists(speaker_dir):
+            return make_response(
+                msg="speaker not exists",
+                result={"userId": userId, "speakerId": speakerId},
+            )
 
-    shutil.rmtree(speaker_dir)
+        shutil.rmtree(speaker_dir)
 
+    logger.info("speaker deleted userId=%s speakerId=%s", userId, speakerId)
     return make_response(
         msg="delete speaker successfully",
         result={"userId": userId, "speakerId": speakerId},

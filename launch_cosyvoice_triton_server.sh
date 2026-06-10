@@ -8,7 +8,7 @@ set -e
 CONTAINER_NAME="cosyvoice-server"
 IMAGE_NAME="docker.1panel.live/soar97/triton-cosyvoice:25.06"
 
-GPU_ID="1"
+GPU_ID="4"
 
 HOST_HTTP_PORT=18000
 HOST_GRPC_PORT=18001
@@ -21,7 +21,7 @@ TRITON_DIR="${COSYVOICE_DIR}/runtime/triton_trtllm"
 LOG_FILE="/tmp/cosyvoice_triton.log"
 
 DECOUPLED_MODE="False"
-KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.4"
+KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.8"
 
 ###################################
 # 颜色配置
@@ -101,7 +101,8 @@ install_create_container() {
         --name "${CONTAINER_NAME}" \
         --restart unless-stopped \
         --gpus "\"device=${GPU_ID}\"" \
-        --shm-size=2g \
+        --ipc=host \
+        --shm-size=8g \
         -p "${HOST_HTTP_PORT}:18000" \
         -p "${HOST_GRPC_PORT}:18001" \
         -p "${HOST_METRICS_PORT}:18002" \
@@ -243,7 +244,7 @@ stop_service() {
     ensure_container_running
 
     exec_in_container "
-ps -ef | grep triton | grep -v grep | awk '{print \$2}' | xargs -r kill -9
+ps -ef | grep -E 'tritonserver|trtllm|cosyvoice' | grep -v grep | awk '{print \$2}' | xargs -r kill -9
 "
 
     log_ok "服务已停止"

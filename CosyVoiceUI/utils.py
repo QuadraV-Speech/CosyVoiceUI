@@ -12,9 +12,9 @@ SPEED_MAP = {
 }
 
 VOLUME_MAP = {
-    "small": -6.0,
-    "middle": 0.0,
-    "large": 6.0,
+    "small": 0.8,
+    "middle": 1.0,
+    "large": 1.2,
 }
 
 
