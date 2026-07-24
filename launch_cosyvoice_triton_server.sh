@@ -8,7 +8,7 @@ set -e
 CONTAINER_NAME="cosyvoice-server"
 IMAGE_NAME="docker.1panel.live/soar97/triton-cosyvoice:25.06"
 
-GPU_ID="4"
+GPU_ID="3"
 
 HOST_HTTP_PORT=18000
 HOST_GRPC_PORT=18001
@@ -21,7 +21,11 @@ TRITON_DIR="${COSYVOICE_DIR}/runtime/triton_trtllm"
 LOG_FILE="/tmp/cosyvoice_triton.log"
 
 DECOUPLED_MODE="False"
-KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.8"
+KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.7"
+
+# Git 克隆代理。优先使用专用变量，否则沿用当前 shell 的代理配置。
+GIT_PROXY_URL="${COSYVOICE_GIT_PROXY:-${HTTPS_PROXY:-${HTTP_PROXY:-}}}"
+PROXY_RELAY_PORT="${COSYVOICE_PROXY_RELAY_PORT:-17897}"
 
 ###################################
 # 颜色配置
@@ -88,6 +92,78 @@ exec_in_container() {
     docker exec "${CONTAINER_NAME}" /bin/bash -c "$1"
 }
 
+CONTAINER_GIT_PROXY=""
+PROXY_RELAY_PID=""
+
+stop_proxy_relay() {
+    if [ -n "${PROXY_RELAY_PID}" ] && kill -0 "${PROXY_RELAY_PID}" 2>/dev/null; then
+        kill "${PROXY_RELAY_PID}" 2>/dev/null || true
+        wait "${PROXY_RELAY_PID}" 2>/dev/null || true
+    fi
+
+    PROXY_RELAY_PID=""
+}
+
+prepare_git_proxy() {
+    CONTAINER_GIT_PROXY=""
+
+    if [ -z "${GIT_PROXY_URL}" ]; then
+        log_info "未配置 Git 代理，使用直连"
+        return
+    fi
+
+    # 容器中的 127.0.0.1 指向容器自身。若代理只监听宿主机回环地址，
+    # 临时在当前容器的 Docker 网关上建立 TCP 转发。
+    if [[ "${GIT_PROXY_URL}" =~ ^(https?://)([^/@]+@)?(127\.0\.0\.1|localhost):([0-9]+)(/.*)?$ ]]; then
+        local proxy_scheme="${BASH_REMATCH[1]}"
+        local proxy_auth="${BASH_REMATCH[2]}"
+        local proxy_port="${BASH_REMATCH[4]}"
+        local proxy_path="${BASH_REMATCH[5]}"
+        local docker_gateway
+
+        if ! command -v ncat >/dev/null 2>&1; then
+            log_err "代理监听在本机回环地址，但未安装 ncat，容器无法访问该代理"
+            log_err "请安装 ncat，或将 COSYVOICE_GIT_PROXY 设置为容器可访问的代理地址"
+            return 1
+        fi
+
+        if ! [[ "${PROXY_RELAY_PORT}" =~ ^[0-9]+$ ]] ||
+            [ "${PROXY_RELAY_PORT}" -lt 1 ] ||
+            [ "${PROXY_RELAY_PORT}" -gt 65535 ]; then
+            log_err "无效的代理转发端口：${PROXY_RELAY_PORT}"
+            return 1
+        fi
+
+        docker_gateway="$(docker inspect \
+            --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' \
+            "${CONTAINER_NAME}")"
+
+        if [ -z "${docker_gateway}" ]; then
+            log_err "无法获取容器的 Docker 网关地址"
+            return 1
+        fi
+
+        ncat -l "${docker_gateway}" "${PROXY_RELAY_PORT}" \
+            --keep-open \
+            --sh-exec "ncat 127.0.0.1 ${proxy_port}" \
+            >/tmp/cosyvoice_git_proxy_relay.log 2>&1 &
+        PROXY_RELAY_PID=$!
+
+        sleep 1
+        if ! kill -0 "${PROXY_RELAY_PID}" 2>/dev/null; then
+            log_err "代理转发启动失败，详情见 /tmp/cosyvoice_git_proxy_relay.log"
+            PROXY_RELAY_PID=""
+            return 1
+        fi
+
+        CONTAINER_GIT_PROXY="${proxy_scheme}${proxy_auth}${docker_gateway}:${PROXY_RELAY_PORT}${proxy_path}"
+        log_ok "已为容器建立临时 Git 代理转发"
+    else
+        CONTAINER_GIT_PROXY="${GIT_PROXY_URL}"
+        log_info "使用 COSYVOICE_GIT_PROXY/系统代理克隆仓库"
+    fi
+}
+
 ###################################
 # 安装步骤
 ###################################
@@ -115,23 +191,50 @@ install_create_container() {
 install_clone_repo() {
     log_step "克隆 CosyVoice 仓库"
 
-    exec_in_container "
+    prepare_git_proxy
+    trap stop_proxy_relay EXIT
+
+    local proxy_args=()
+    if [ -n "${CONTAINER_GIT_PROXY}" ]; then
+        proxy_args=(
+            -e "HTTP_PROXY=${CONTAINER_GIT_PROXY}"
+            -e "HTTPS_PROXY=${CONTAINER_GIT_PROXY}"
+            -e "http_proxy=${CONTAINER_GIT_PROXY}"
+            -e "https_proxy=${CONTAINER_GIT_PROXY}"
+        )
+    fi
+
+    local clone_status=0
+    docker exec "${proxy_args[@]}" "${CONTAINER_NAME}" /bin/bash -c "
 set -e
 
-export GIT_HTTP_VERSION=HTTP/1.1
 export GIT_TERMINAL_PROMPT=0
 
 cd ${WORKSPACE_DIR}
 
-if [ ! -d CosyVoice ]; then
-    git clone https://github.com/FunAudioLLM/CosyVoice.git
+if [ -d CosyVoice/.git ] && git -C CosyVoice rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo 'CosyVoice already cloned, skip clone'
 else
-    echo 'CosyVoice already exists, skip clone'
+    if [ -e CosyVoice ]; then
+        echo 'Removing incomplete CosyVoice checkout'
+        rm -rf CosyVoice
+    fi
+
+    git -c http.version=HTTP/1.1 clone --progress \
+        https://github.com/FunAudioLLM/CosyVoice.git
 fi
 
 cd ${COSYVOICE_DIR}
-git submodule update --init --recursive
-"
+git -c http.version=HTTP/1.1 submodule update --init --recursive --progress
+" || clone_status=$?
+
+    stop_proxy_relay
+    trap - EXIT
+
+    if [ "${clone_status}" -ne 0 ]; then
+        log_err "CosyVoice 仓库克隆失败"
+        return "${clone_status}"
+    fi
 
     log_ok "仓库准备完成"
 }

@@ -123,20 +123,24 @@ CosyVoiceUI 是基于：
 ## 一键安装脚本
 指定GPU请修改脚本变量 `GPU_ID`
 ```bash
+# 如需通过宿主机代理克隆（也支持只监听 127.0.0.1 的代理）
+COSYVOICE_GIT_PROXY=http://127.0.0.1:7897 \
+  bash launch_cosyvoice_triton_server.sh install
+
 # 安装 cosyvoice docker 环境
-bash launch_cosyvoice_triton_server install
+bash launch_cosyvoice_triton_server.sh install
 
 # 启动 triton 服务
-bash launch_cosyvoice_triton_server start
+bash launch_cosyvoice_triton_server.sh start
 
 # 停止 triton 服务
-bash launch_cosyvoice_triton_server stop
+bash launch_cosyvoice_triton_server.sh stop
 
 # 查看日志
-bash launch_cosyvoice_triton_server logs
+bash launch_cosyvoice_triton_server.sh logs
 
 # 查看状态
-bash launch_cosyvoice_triton_server status
+bash launch_cosyvoice_triton_server.sh status
 ```
 
 ---
