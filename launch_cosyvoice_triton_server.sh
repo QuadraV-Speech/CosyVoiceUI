@@ -21,11 +21,13 @@ TRITON_DIR="${COSYVOICE_DIR}/runtime/triton_trtllm"
 LOG_FILE="/tmp/cosyvoice_triton.log"
 
 DECOUPLED_MODE="False"
-KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.7"
+KV_CACHE_FREE_GPU_MEMORY_FRACTION="0.6"
 
 # Git 克隆代理。优先使用专用变量，否则沿用当前 shell 的代理配置。
 GIT_PROXY_URL="${COSYVOICE_GIT_PROXY:-${HTTPS_PROXY:-${HTTP_PROXY:-}}}"
 PROXY_RELAY_PORT="${COSYVOICE_PROXY_RELAY_PORT:-17897}"
+STARTUP_TIMEOUT_SECONDS=180
+HEALTH_URL="http://127.0.0.1:${HOST_HTTP_PORT}/v2/health/ready"
 
 ###################################
 # 颜色配置
@@ -70,6 +72,21 @@ container_running() {
     docker ps --format '{{.Names}}' | grep -wq "${CONTAINER_NAME}"
 }
 
+container_gpu_healthy() {
+    docker exec "${CONTAINER_NAME}" /bin/bash -lc "nvidia-smi >/dev/null 2>&1"
+}
+
+service_process_running() {
+    # Bracket the first character so pgrep does not match its own command line.
+    container_running && docker exec "${CONTAINER_NAME}" /bin/bash -lc \
+        "pgrep -f '[t]ritonserver --model-repository' >/dev/null 2>&1 && \
+         pgrep -f '[t]rtllm-serve serve' >/dev/null 2>&1"
+}
+
+health_ready() {
+    curl -fsS "${HEALTH_URL}" >/dev/null 2>&1
+}
+
 ensure_container_exists() {
     if ! container_exists; then
         log_err "容器不存在：${CONTAINER_NAME}"
@@ -86,6 +103,28 @@ ensure_container_running() {
         docker start "${CONTAINER_NAME}" >/dev/null
         log_ok "容器已启动"
     fi
+}
+
+ensure_container_gpu_healthy() {
+    ensure_container_running
+
+    if container_gpu_healthy; then
+        log_ok "容器 GPU/NVML 正常"
+        return
+    fi
+
+    log_warn "容器内 GPU/NVML 不可用，尝试重启容器刷新 NVIDIA runtime"
+    docker restart "${CONTAINER_NAME}" >/dev/null
+    sleep 2
+
+    if ! container_gpu_healthy; then
+        log_err "容器重启后 GPU/NVML 仍不可用"
+        log_err "请检查宿主机 NVIDIA driver / nvidia-container-runtime"
+        docker exec "${CONTAINER_NAME}" /bin/bash -lc "nvidia-smi" || true
+        exit 1
+    fi
+
+    log_ok "容器 GPU/NVML 已恢复"
 }
 
 exec_in_container() {
@@ -164,6 +203,29 @@ prepare_git_proxy() {
     fi
 }
 
+wait_for_ready() {
+    log_info "等待 Triton ready，超时 ${STARTUP_TIMEOUT_SECONDS}s"
+
+    for _ in $(seq 1 "${STARTUP_TIMEOUT_SECONDS}"); do
+        if health_ready; then
+            log_ok "Triton 已 ready：${HEALTH_URL}"
+            return
+        fi
+
+        if ! service_process_running; then
+            log_err "服务进程已退出，最近日志如下："
+            docker exec "${CONTAINER_NAME}" /bin/bash -lc "tail -n 120 ${LOG_FILE}" || true
+            exit 1
+        fi
+
+        sleep 1
+    done
+
+    log_err "等待 Triton ready 超时，最近日志如下："
+    docker exec "${CONTAINER_NAME}" /bin/bash -lc "tail -n 120 ${LOG_FILE}" || true
+    exit 1
+}
+
 ###################################
 # 安装步骤
 ###################################
@@ -176,7 +238,7 @@ install_create_container() {
     docker run -dit \
         --name "${CONTAINER_NAME}" \
         --restart unless-stopped \
-        --gpus "\"device=${GPU_ID}\"" \
+        --gpus "device=${GPU_ID}" \
         --ipc=host \
         --shm-size=8g \
         -p "${HOST_HTTP_PORT}:18000" \
@@ -313,6 +375,13 @@ start_service() {
     log_step "启动 CosyVoice Triton 服务"
 
     ensure_container_running
+    ensure_container_gpu_healthy
+
+    if service_process_running; then
+        log_warn "检测到服务进程已存在"
+        wait_for_ready
+        return
+    fi
 
     install_modify_script
 
@@ -338,7 +407,9 @@ nohup bash run_cosyvoice3.sh 3 3 > ${LOG_FILE} 2>&1 &
     echo "    $0 logs"
 
     log_info "健康检查："
-    echo "    http://127.0.0.1:${HOST_HTTP_PORT}/v2/health/ready"
+    echo "    ${HEALTH_URL}"
+
+    wait_for_ready
 }
 
 stop_service() {
@@ -376,7 +447,18 @@ tail -f ${LOG_FILE}
 show_status() {
     log_step "容器状态"
 
-    docker ps -a | grep "${CONTAINER_NAME}" || true
+    docker ps -a --filter "name=^/${CONTAINER_NAME}$" || true
+
+    echo ""
+    log_step "容器 GPU"
+
+    if container_exists && container_running; then
+        if ! docker exec "${CONTAINER_NAME}" /bin/bash -lc "nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader,nounits"; then
+            log_warn "容器内 GPU/NVML 不可用，可执行：$0 start 自动尝试修复"
+        fi
+    else
+        log_warn "容器未运行"
+    fi
 
     echo ""
     log_step "服务进程"
@@ -392,8 +474,11 @@ ps -ef | grep -E 'tritonserver|trtllm' | grep -v grep || true
     echo ""
     log_step "Triton Health"
 
-    curl -s "http://127.0.0.1:${HOST_HTTP_PORT}/v2/health/ready" || true
-    echo ""
+    if health_ready; then
+        log_ok "READY：${HEALTH_URL}"
+    else
+        log_warn "NOT READY：${HEALTH_URL}"
+    fi
 }
 
 remove_service() {

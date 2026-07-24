@@ -23,6 +23,10 @@ def get_session() -> requests.Session:
     session = getattr(_thread_local, "session", None)
     if session is None:
         session = requests.Session()
+
+        # 不读取环境变量中的代理
+        session.trust_env = False
+
         _thread_local.session = session
     return session
 
